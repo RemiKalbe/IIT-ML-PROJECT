@@ -18,6 +18,7 @@ class ExportFileFormat(Enum):
 class NodeMetadata(NamedTuple):
     node_identifier_col: Union[str, int, None]
     features_cols: Union[List[Union[str, int]], None]
+    class_col: Union[str, int, None]
     delimiter: str
     has_header: bool
 
@@ -216,6 +217,7 @@ class Graph:
         ],
         node_identifier_col: Union[str, int, None] = None,
         features_cols: Union[List[Union[str, int]], None] = None,
+        class_col: Union[str, int, None] = None,
         override_data_file_extension: Union[str, None] = None,
         delimiter: str = ",",
     ) -> None:
@@ -230,21 +232,30 @@ class Graph:
             override_data_file_extension: (Optional) Override the file extension for file paths.
             delimiter: (Optional) The delimiter used in CSV files.
         """
-        # Security check, if node_identifier_col is provided and it's a string,
-        # and features_cols is provided, and it's a tuple of integers, or vice versa,
+        # Security check, making sure that node_identifier_col,
+        # features_cols, and class_col have all one type of column identifier
         # raise an error
-        if node_identifier_col and features_cols:
-            if isinstance(node_identifier_col, str) and all(
-                isinstance(col, int) for col in features_cols
-            ):
+        is_node_identifier_col_str = (
+            isinstance(node_identifier_col, str) if node_identifier_col else None
+        )
+        is_features_cols_str = (
+            all(isinstance(col, str) for col in features_cols)
+            if features_cols
+            else None
+        )
+        is_class_col_str = isinstance(class_col, str) if class_col else None
+
+        all_cols = [is_node_identifier_col_str, is_features_cols_str, is_class_col_str]
+
+        count_not_none = sum(1 for x in all_cols if x is not None)
+
+        if count_not_none > 0:
+            # Then the sum of either True or False is 0. If it's 0, then all the values are the same type
+            t_s = sum(1 for x in all_cols if x is True)
+            f_s = sum(1 for x in all_cols if x is False)
+            if t_s != 0 and f_s != 0:
                 raise ValueError(
-                    "node_identifier_col is a string, but features_cols is a tuple of integers"
-                )
-            elif isinstance(node_identifier_col, int) and all(
-                isinstance(col, str) for col in features_cols
-            ):
-                raise ValueError(
-                    "node_identifier_col is an integer, but features_cols is a tuple of strings"
+                    "node_identifier_col, features_cols, and class_col must all be of the same type"
                 )
 
         has_header = (
@@ -257,7 +268,7 @@ class Graph:
             _, file_extension = (
                 os.path.splitext(data)
                 if override_data_file_extension is None
-                else override_data_file_extension
+                else (None, override_data_file_extension)
             )
 
             if file_extension in [".csv", ".txt"]:
@@ -276,10 +287,17 @@ class Graph:
                 if isinstance(node_identifier_col, int):
                     # Integer index for column
                     node_col_name = data.columns[node_identifier_col]
+                    node_col_idx = node_identifier_col
                     data = data.rename({node_col_name: "Node"})
                 else:
                     # String name for column
+                    node_col_idx = data.columns.index(node_identifier_col)
                     data = data.rename({node_identifier_col: "Node"})
+            else:
+                # Default to first column as node identifier
+                node_col_name = data.columns[0]
+                node_col_idx = 0
+                data = data.rename({node_col_name: "Node"})
 
             # Handling node features
             if features_cols:
@@ -289,9 +307,7 @@ class Graph:
                     fn = 0
                     for i, col in enumerate(data.columns):
                         # If the current column is not in the features_cols list, drop it
-                        if col != "Node" and i not in features_cols:
-                            data.drop_in_place(col)
-                        elif col != "Node":
+                        if i in features_cols:
                             data = data.rename({col: f"Feature {fn}"})
                             fn += 1
                 elif all(isinstance(col, str) for col in features_cols):
@@ -299,6 +315,36 @@ class Graph:
                     for col in data.columns:
                         if col != "Node" and col not in features_cols:
                             data.drop_in_place(col)
+            else:
+                # Determine indices for the features
+                # taking into account the node identifier column
+                # and the class column
+                indices = [i for i in range(len(data.columns))]
+                if node_identifier_col is not None:
+                    indices.remove(node_col_idx)
+                if class_col is not None:
+                    if isinstance(class_col, int):
+                        indices.remove(class_col)
+                    else:
+                        indices.remove(data.columns.index(class_col))
+
+                # Rename to "Feature i" where i is the index
+                fn = 0
+                for i, col in enumerate(data.columns):
+                    # If the current column is not in the indices list, drop it
+                    if i in indices:
+                        data = data.rename({col: f"Feature {fn}"})
+                        fn += 1
+
+            # Handling class column
+            if class_col:
+                if isinstance(class_col, int):
+                    # Integer index for column
+                    class_col_name = data.columns[class_col]
+                    data = data.rename({class_col_name: "Class"})
+                else:
+                    # String name for column
+                    data = data.rename({class_col: "Class"})
 
             self.nodes = data
 
@@ -306,6 +352,7 @@ class Graph:
             self.node_metadata = NodeMetadata(
                 node_identifier_col=node_identifier_col,
                 features_cols=features_cols,
+                class_col=class_col,
                 delimiter=delimiter,
                 has_header=has_header,
             )
@@ -325,23 +372,51 @@ class Graph:
         """
         if not isinstance(self.edges, pl.DataFrame):
             raise ValueError("No edge data is available")
+        if not isinstance(self.edge_metadata, EdgeMetadata):
+            raise ValueError("Edge metadata is not defined")
+
         edge_data = self.edges.clone()
 
-        if not self.edge_metadata:
-            raise ValueError("No edge metadata is available")
-        if self.edge_metadata.source_target_col:
-            source_col, target_col = self.edge_metadata.source_target_col
-            # If the source and target columns are strings, rename them to their original names
-            if isinstance(source_col, str) and isinstance(target_col, str):
-                edge_data = edge_data.rename(
-                    {"Source": source_col, "Target": target_col}
-                )
-            elif isinstance(source_col, int) and isinstance(target_col, int):
-                # Remove column names for index-based columns
-                edge_data.columns = [f"column_{i}" for i in range(edge_data.shape[1])]
+        source_idx = edge_data.find_idx_by_name("Source")
+        target_idx = edge_data.find_idx_by_name("Target")
+        feature_idx = [
+            edge_data.find_idx_by_name(f"Feature {i}")
+            for i in range(self.get_edge_feature_count())
+        ]
+
+        if self.edge_metadata.has_header:
+            assert isinstance(self.edge_metadata.source_target_col, tuple)
+
+            (
+                original_source_col,
+                original_target_col,
+            ) = self.edge_metadata.source_target_col
+            original_feature_cols = self.edge_metadata.edge_attributes
+
+            assert original_source_col is not None
+            assert original_target_col is not None
+            assert original_feature_cols is not None
+
+            # If has_header is True, then source_target_col and edge_attributes are strings
+            assert isinstance(original_source_col, str)
+            assert isinstance(original_target_col, str)
+            assert all(isinstance(col, str) for col in original_feature_cols)
+
+            for c_idx in edge_data.columns:
+                if c_idx == source_idx:
+                    edge_data = edge_data.rename(mapping={c_idx: original_source_col})
+                elif c_idx == target_idx:
+                    edge_data = edge_data.rename(mapping={c_idx: original_target_col})
+                elif c_idx in feature_idx:
+                    c = original_feature_cols.pop(0)
+                    assert isinstance(c, str)
+                    edge_data = edge_data.rename(mapping={c_idx: c})
 
         return self._export_data_as_list(
-            edge_data, self.edge_metadata, file_format, file_path
+            data=edge_data,
+            metadata=self.edge_metadata,
+            file_format=file_format,
+            file_path=file_path,
         )
 
     def export_nodes_as_node_list(
@@ -358,22 +433,51 @@ class Graph:
             The node data in the specified format, or None if written to a file.
         """
         if not isinstance(self.nodes, pl.DataFrame):
-            raise ValueError("No node data is available")
+            raise ValueError("Nodes data frame is not defined.")
+        if not isinstance(self.node_metadata, NodeMetadata):
+            raise ValueError("Node metadata is not defined.")
+
         node_data = self.nodes.clone()
 
-        if not self.node_metadata:
-            raise ValueError("No node metadata is available")
-        if self.node_metadata.node_identifier_col is not None:
-            if isinstance(self.node_metadata.node_identifier_col, str):
-                node_data = node_data.rename(
-                    {"Node": self.node_metadata.node_identifier_col}
-                )
-            elif isinstance(self.node_metadata.node_identifier_col, int):
-                # Remove column name for index-based columns
-                node_data.columns = [f"column_{i}" for i in range(node_data.shape[1])]
+        # Identifying the index of the node identifier column
+        node_idx = node_data.find_idx_by_name("Node")
+        feature_idx = [
+            node_data.find_idx_by_name(f"Feature {i}")
+            for i in range(self.get_node_feature_count())
+        ]
+        class_idx = node_data.find_idx_by_name("Class")
+
+        if self.node_metadata.has_header:
+            original_node_identifier_col = self.node_metadata.node_identifier_col
+            original_feature_cols = self.node_metadata.features_cols
+            original_class_col = self.node_metadata.class_col
+
+            assert original_class_col is not None
+            assert original_feature_cols is not None
+            assert original_node_identifier_col is not None
+
+            # If has_header is True, then node_identifier_col, features_cols, and class_col are strings
+            assert isinstance(original_node_identifier_col, str)
+            assert all(isinstance(col, str) for col in original_feature_cols)
+            assert isinstance(original_class_col, str)
+
+            for c_idx in node_data.columns:
+                if c_idx == node_idx:
+                    node_data = node_data.rename(
+                        mapping={c_idx: original_node_identifier_col}
+                    )
+                elif c_idx in feature_idx:
+                    c = original_feature_cols.pop(0)
+                    assert isinstance(c, str)
+                    node_data = node_data.rename(mapping={c_idx: c})
+                elif c_idx == class_idx:
+                    node_data = node_data.rename(mapping={c_idx: original_class_col})
 
         return self._export_data_as_list(
-            node_data, self.node_metadata, file_format, file_path
+            data=node_data,
+            metadata=self.node_metadata,
+            file_format=file_format,
+            file_path=file_path,
         )
 
     def _export_data_as_list(
@@ -505,6 +609,23 @@ class Graph:
         attributes = self.nodes.filter(pl.col("Node") == node)
         return attributes.to_dict(as_series=False)
 
+    def get_node_feature_count(self) -> int:
+        """
+        Retrieves the number of node features.
+
+        Returns:
+            The number of node features.
+        """
+        if not isinstance(self.nodes, pl.DataFrame):
+            raise ValueError(
+                "Get node feature count called without existing nodes DataFrame"
+            )
+        c = 0
+        for col in self.nodes.columns:
+            if col.startswith("Feature"):
+                c += 1
+        return c
+
     def get_edge(self, source: str, target: str) -> Dict[str, list[Any]]:
         """
         Retrieves an edge and its attributes.
@@ -522,3 +643,20 @@ class Graph:
             (pl.col("Source") == source) & (pl.col("Target") == target)
         )
         return attributes.to_dict(as_series=False)
+
+    def get_edge_feature_count(self) -> int:
+        """
+        Retrieves the number of edge features.
+
+        Returns:
+            The number of edge features.
+        """
+        if not isinstance(self.edges, pl.DataFrame):
+            raise ValueError(
+                "Get edge feature count called without existing edges DataFrame"
+            )
+        c = 0
+        for col in self.edges.columns:
+            if col.startswith("Feature"):
+                c += 1
+        return c
