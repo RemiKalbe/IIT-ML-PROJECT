@@ -683,8 +683,12 @@ class Graph:
         """
         if not isinstance(self.edges, pl.DataFrame):
             raise ValueError("Get edge called without existing edges DataFrame")
+        print(f"node_1: {node_1}")
+        print(f"node_2: {node_2}")
         edge_1 = self.get_edge(node_1, node_2)
         edge_2 = self.get_edge(node_2, node_1)
+        print(f"edge_1: {edge_1}")
+        print(f"edge_2: {edge_2}")
 
         # Remove either edge_1 or edge_2 if they are the same but in different directions
         if edge_1 and edge_2 and edge_1 == edge_2:

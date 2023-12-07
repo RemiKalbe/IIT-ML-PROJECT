@@ -63,7 +63,9 @@ class LocalGNNAnalyzer:
                 edge_attributes = {
                     k: v[0] for k, v in edge.items() if k not in ["Source", "Target"]
                 }
-                self.graph.add_edge(edge["Source"], edge["Target"], **edge_attributes)
+                self.graph.add_edge(
+                    edge["Source"][0], edge["Target"][0], **edge_attributes
+                )
 
         # Perform the current step's ablation
         if self.current_step < len(self.ablation_plan):
@@ -90,6 +92,8 @@ class LocalGNNAnalyzer:
                     prev_prediction=self.original_gnn_prediction,
                     current_prediction=prev_gnn_prediction,
                 )
+                if len(self.leaderboard) < self.current_depth:
+                    self.leaderboard.append([])
                 self.leaderboard[self.current_depth - 1].append(
                     {"edges": self.ablated_edges, "impact": impact}
                 )
@@ -103,12 +107,14 @@ class LocalGNNAnalyzer:
         ):
             self.current_depth += 1
             self.current_step = 0
-            next_starting_node = self._determine_next_starting_node()
+            next_starting_node = self._determine_next_starting_node(
+                is_original_prediction
+            )
             self.prepare_ablation_plan(
                 next_starting_node, self.max_depth - self.current_depth
             )
 
-    def _determine_next_starting_node(self):
+    def _determine_next_starting_node(self, is_original_prediction: bool = False):
         """
         Determines the next starting node for ablation based on the leaderboard.
 
@@ -120,13 +126,14 @@ class LocalGNNAnalyzer:
         next_edge = None
 
         for depth_impacts in self.leaderboard:
+            print(depth_impacts)
             for impact_info in depth_impacts:
                 if impact_info["impact"] > max_impact:
                     max_impact = impact_info["impact"]
                     next_edge = impact_info["edges"]
 
         # If no edge was found, raise an error
-        if not next_edge and self.original_gnn_prediction is not None:
+        if not next_edge and not is_original_prediction:
             raise ValueError(
                 "No edge was found with the maximum impact. This should never happen."
             )
@@ -161,6 +168,7 @@ class LocalGNNAnalyzer:
         """
         interpretation = []
         # Traverse each depth level in the leaderboard
+        print(self.leaderboard)
         for depth, impacts_at_depth in enumerate(self.leaderboard):
             for impact_info in impacts_at_depth:
                 # Extract and accumulate the path information
