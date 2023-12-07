@@ -9,31 +9,33 @@ class LocalGNNAnalyzer:
         self, graph: Graph, local_impact_calculator: LocalImpactCalculator
     ) -> None:
         self.graph: Graph = graph
-        self.ablation_plan: List[List[List[str]]] = []
-        self.ablated_edges: Union[List[Dict[str, list[Any]]], None] = None
+        self.ablation_plan: List[List[List[Union[str, int]]]] = []
+        self.ablated_edges: Union[List[Dict[str, Any]], None] = None
         self.leaderboard: List[List[Dict[str, Any]]] = []
         self.current_step: int = 0
         self.current_depth: int = 1
         self.max_depth: int = 1
         self.original_gnn_prediction: Union[Union[float, List[float], str], None] = None
         self.impact_calculator: LocalImpactCalculator = local_impact_calculator
-        self.current_starting_node: Union[str, None] = None
-        self.previous_starting_nodes: Set[str] = set()
+        self.current_starting_node: Union[str, int, None] = None
+        self.previous_starting_nodes: Set[Union[str, int]] = set()
 
-    def prepare_ablation_plan(self, starting_node: str, max_depth: int = 1):
+    def prepare_ablation_plan(self, starting_node: Union[str, int], max_depth: int = 1):
         self.max_depth = max_depth
         self.ablation_plan = self._generate_ablation_plan(
             starting_node=starting_node, previous_nodes=self.previous_starting_nodes
         )
 
     def _generate_ablation_plan(
-        self, starting_node: str, previous_nodes: Set[str] = set()
-    ) -> List[List[List[str]]]:
+        self,
+        starting_node: Union[str, int],
+        previous_nodes: Set[Union[str, int]] = set(),
+    ) -> List[List[List[Union[str, int]]]]:
         self.current_starting_node = starting_node
         self.previous_starting_nodes.add(starting_node)
 
-        neighbors: List[str] = self.graph.get_neighbors(starting_node)
-        plan: List[List[List[str]]] = []
+        neighbors: List[Union[str, int]] = self.graph.get_neighbors(starting_node)
+        plan: List[List[List[Union[str, int]]]] = []
 
         # Filter out neighbors that are in the previous_nodes set
         neighbors = [n for n in neighbors if n not in previous_nodes]
@@ -61,18 +63,25 @@ class LocalGNNAnalyzer:
                 edge_attributes = {
                     k: v[0] for k, v in edge.items() if k not in ["Source", "Target"]
                 }
-                self.graph.add_edge(
-                    edge["Source"][0], edge["Target"][0], **edge_attributes
-                )
+                self.graph.add_edge(edge["Source"], edge["Target"], **edge_attributes)
 
         # Perform the current step's ablation
         if self.current_step < len(self.ablation_plan):
             planed_ablation_edges = self.ablation_plan[self.current_step]
-            self.ablated_edges = [
-                self.graph.get_edge(edge[0], edge[1]) for edge in planed_ablation_edges
+            expected_ablated_edges = [
+                self.graph.get_edge_two_ways(edge[0], edge[1])
+                for edge in planed_ablation_edges
             ]
+
+            if any([edge is None for edge in expected_ablated_edges]):
+                raise ValueError(
+                    "One or more edges in the ablation plan were not found in the graph."
+                )
+
+            self.ablated_edges = expected_ablated_edges  # type: ignore
+
             for edge in self.ablated_edges:
-                self.graph.delete_edge(edge["Source"][0], edge["Target"][0])
+                self.graph.delete_edge(edge["Source"], edge["Target"])  # type: ignore
 
             # Calculate impact and update the leaderboard
 
@@ -81,8 +90,6 @@ class LocalGNNAnalyzer:
                     prev_prediction=self.original_gnn_prediction,
                     current_prediction=prev_gnn_prediction,
                 )
-                if len(self.leaderboard) < self.current_depth:
-                    self.leaderboard.append([])
                 self.leaderboard[self.current_depth - 1].append(
                     {"edges": self.ablated_edges, "impact": impact}
                 )
@@ -119,10 +126,15 @@ class LocalGNNAnalyzer:
                     next_edge = impact_info["edges"]
 
         # If no edge was found, raise an error
-        if not next_edge:
+        if not next_edge and self.original_gnn_prediction is not None:
             raise ValueError(
                 "No edge was found with the maximum impact. This should never happen."
             )
+
+        # If no edge was found, this could be because this is the original prediction
+        # and no edge was ablated. In this case, we can just return the current starting node.
+        if not next_edge and self.original_gnn_prediction:
+            return self.current_starting_node
 
         # Choose one of the nodes of the most impactful edge as the next starting node
         if self.current_starting_node is None:

@@ -518,7 +518,9 @@ class Graph:
         else:
             raise ValueError("Unsupported output format")
 
-    def add_node(self, node: str, **attributes: Union[str, int, float]) -> None:
+    def add_node(
+        self, node: Union[str, int], **attributes: Union[str, int, float]
+    ) -> None:
         """
         Adds a node to the graph with optional additional attributes.
 
@@ -531,7 +533,7 @@ class Graph:
             raise ValueError("Add node called without existing nodes DataFrame")
         self.nodes = self.nodes.vstack(pl.DataFrame([new_node]))
 
-    def delete_node(self, node: str) -> None:
+    def delete_node(self, node: Union[str, int]) -> None:
         """
         Deletes a node from the graph. Also deletes any edges that contain the node.
 
@@ -550,7 +552,10 @@ class Graph:
         )
 
     def add_edge(
-        self, source: str, target: str, **attributes: Union[str, int, float]
+        self,
+        source: Union[str, int],
+        target: Union[str, int],
+        **attributes: Union[str, int, float],
     ) -> None:
         """
         Adds an edge to the graph with optional additional attributes.
@@ -565,7 +570,7 @@ class Graph:
             raise ValueError("Add edge called without existing edges DataFrame")
         self.edges = self.edges.vstack(pl.DataFrame([new_edge]))
 
-    def delete_edge(self, source: str, target: str) -> None:
+    def delete_edge(self, source: Union[str, int], target: Union[str, int]) -> None:
         """
         Deletes an edge from the graph.
 
@@ -579,7 +584,7 @@ class Graph:
             (pl.col("Source") != source) & (pl.col("Target") != target)
         )
 
-    def get_neighbors(self, node: str) -> List[str]:
+    def get_neighbors(self, node: Union[str, int]) -> List[Union[str, int]]:
         """
         Retrieves the neighbors of a given node.
 
@@ -591,10 +596,12 @@ class Graph:
         """
         if not isinstance(self.edges, pl.DataFrame):
             raise ValueError("Get neighbors called without existing edges DataFrame")
-        neighbors = self.edges.filter(pl.col("Source") == node)["Target"]
+        neighbors_as_target = self.edges.filter(pl.col("Source") == node)["Target"]
+        neighbors_as_source = self.edges.filter(pl.col("Target") == node)["Source"]
+        neighbors = neighbors_as_target.append(neighbors_as_source).unique()
         return neighbors.to_list()
 
-    def get_node(self, node: str) -> Dict[str, list[Any]]:
+    def get_node(self, node: Union[str, int]) -> Dict[str, Any]:
         """
         Retrieves a node and its attributes.
 
@@ -626,7 +633,67 @@ class Graph:
                 c += 1
         return c
 
-    def get_edge(self, source: str, target: str) -> Dict[str, list[Any]]:
+    def get_node_with_most_neighbors(self) -> Union[str, int]:
+        """Finds the node with the highest number of neighbors.
+
+        Returns:
+            The identifier of the node with the highest number of neighbors.
+        """
+        if not isinstance(self.edges, pl.DataFrame):
+            raise ValueError("Edges DataFrame is not defined.")
+
+        # Getting counts of each node as a source and as a target in the edges.
+        target_counts = (
+            self.edges.groupby("Target")
+            .count()
+            .rename({"Target": "Node", "count": "target_count"})
+        )
+        source_counts = (
+            self.edges.groupby("Source")
+            .count()
+            .rename({"Source": "Node", "count": "source_count"})
+        )
+
+        # Merging the counts together into a single DataFrame
+        all_counts_df = target_counts.join(
+            source_counts, on="Node", how="outer"
+        ).with_columns(
+            (pl.col("target_count") + pl.col("source_count")).alias("total_count")
+        )
+
+        # Identifying the node with the maximum count (degree)
+        max_degree_row = (
+            all_counts_df.sort("total_count", descending=True).limit(1)["Node"].item()
+        )
+
+        return max_degree_row
+
+    def get_edge_two_ways(
+        self, node_1: Union[str, int], node_2: Union[str, int]
+    ) -> Union[Dict[str, Any], None]:
+        """
+        Retrieves an edge and its attributes, what ever the direction of the edge is.
+
+        Args:
+            node_1: The node identifier of the edge.
+            node_2: The node identifier of the edge.
+
+        Returns:
+            A dictionary containing the edge and its attributes.
+        """
+        if not isinstance(self.edges, pl.DataFrame):
+            raise ValueError("Get edge called without existing edges DataFrame")
+        edge_1 = self.get_edge(node_1, node_2)
+        edge_2 = self.get_edge(node_2, node_1)
+
+        # Remove either edge_1 or edge_2 if they are the same but in different directions
+        if edge_1 and edge_2 and edge_1 == edge_2:
+            edge_2 = None
+        return edge_1 or edge_2
+
+    def get_edge(
+        self, source: Union[str, int], target: Union[str, int]
+    ) -> Union[Dict[str, Any], None]:
         """
         Retrieves an edge and its attributes.
 
@@ -639,10 +706,11 @@ class Graph:
         """
         if not isinstance(self.edges, pl.DataFrame):
             raise ValueError("Get edge called without existing edges DataFrame")
-        attributes = self.edges.filter(
+        edge = self.edges.filter(
             (pl.col("Source") == source) & (pl.col("Target") == target)
-        )
-        return attributes.to_dict(as_series=False)
+        ).limit(1)
+
+        return edge.to_dict(as_series=False) if not edge.is_empty() else None
 
     def get_edge_feature_count(self) -> int:
         """
