@@ -1,0 +1,29 @@
+# dataset config
+field_separator: "\t"
+seq_separator: " "
+USER_ID_FIELD: user_id
+ITEM_ID_FIELD: artist_id
+NET_SOURCE_ID_FIELD: source_id
+NET_TARGET_ID_FIELD: target_id
+LABEL_FIELD: label
+NEG_PREFIX: neg_
+load_col:
+  inter: [user_id, artist_id]
+  net: [source_id, target_id]
+
+# social network config
+filter_net_by_inter: True
+undirected_net: True
+
+# training and evaluation
+epochs: 100
+train_batch_size: 4096
+eval_batch_size: 409600000
+valid_metric: NDCG@10
+stopping_step: 50
+
+# MHCN config
+embedding_size: 64
+n_layers: 2
+ssl_reg: 1e-05
+reg_weight: 1e-05
